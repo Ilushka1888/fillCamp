@@ -16,12 +16,20 @@ from src.app.models.shop_models import (
   Product,
 )
 from src.app.models.user_models import User
-from src.app.repositories.balance_repo import BalanceRepository, NotEnoughBalanceError
 from src.app.schemas.miniapp_schemas import (
   CreateOrderRequest,
   OrderItemResponse,
   OrderResponse,
   ShopItemResponse,
+)
+
+from src.app.repositories.balance_repo import BalanceRepository, NotEnoughBalanceError
+from src.app.services.amocrm_service import AmoCRMService
+from src.app.api.routes.amocrm_router import get_amocrm_service
+from src.app.services.loyalty_service import (
+    get_loyalty_rule_for_product,
+    calc_bonus_writeoff,
+    calc_bonus_accrual,
 )
 
 router = APIRouter(prefix="/api/shop", tags=["Shop"])
@@ -46,12 +54,19 @@ async def get_items(
 
 @router.post("/orders", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
 async def create_order(
-  payload: CreateOrderRequest,
-  db: AsyncSession = Depends(get_db),
-  user: User = Depends(get_current_user),
+        payload: CreateOrderRequest,
+        db: AsyncSession = Depends(get_db),
+        user: User = Depends(get_current_user),
+        amocrm_service: AmoCRMService = Depends(get_amocrm_service),
 ) -> OrderResponse:
   if not payload.items:
     raise HTTPException(status_code=400, detail="Cart is empty")
+
+  if len(payload.items) != 1:
+    raise HTTPException(
+      status_code=400,
+      detail="Сейчас можно оформить заказ только с одним товаром",
+    )
 
   product_ids = [i.item_id for i in payload.items]
   stmt_products = select(Product).where(
@@ -68,48 +83,81 @@ async def create_order(
       detail=f"Products not found or inactive: {missing}",
     )
 
-  total_bonus = 0
-  total_money = 0.0
+  # тут уже гарантированно 1 товар
+  cart_item = payload.items[0]
+  product = products[cart_item.item_id]
+  quantity = cart_item.quantity
 
-  for item in payload.items:
-    product = products[item.item_id]
-    total_bonus += product.price_bonus * item.quantity
-    if product.price_money is not None:
-      total_money += float(product.price_money) * item.quantity
+  # базовая цена в рублях
+  price_money = float(product.price_money) if product.price_money is not None else 0.0
+  total_money_raw = price_money * quantity
+
+  # если цена в рублях не задана, берём price_bonus как "номинал" бонусов
+  base_for_bonus = total_money_raw
+  if base_for_bonus == 0 and product.price_bonus:
+    base_for_bonus = float(product.price_bonus) * quantity
+
+  rule = get_loyalty_rule_for_product(product)
 
   balance_repo = BalanceRepository(db)
 
-  payment_method: PaymentMethod
-  total_bonus_to_store = 0
-  total_money_to_store: float | None = None
-
-  if payload.pay_with_bonus and total_bonus > 0:
-    try:
-      await balance_repo.change_balance(
-        user=user,
-        delta=-total_bonus,
-        tx_type=TransactionType.SHOP_PURCHASE,
-        description="Shop purchase",
-      )
-    except NotEnoughBalanceError:
+  # ---------- СПИСАНИЕ БОНУСОВ ----------
+  bonus_to_spend = 0
+  if payload.pay_with_bonus:
+    if rule is None:
+      # Правила не настроены, а клиент пытается платить бонусами
       raise HTTPException(
         status_code=400,
-        detail="Not enough bonus balance",
+        detail="Для этого товара не настроены бонусные правила, оплата бонусами запрещена",
       )
-    total_bonus_to_store = total_bonus
 
-  if total_money > 0:
-    if payload.pay_with_bonus and total_bonus > 0:
-      payment_method = PaymentMethod.MIXED
-    elif payload.pay_with_bonus:
-      # бонусов нет, но флаг поставлен — считаем как карта
-      payment_method = PaymentMethod.CARD_ONLY
-    else:
-      payment_method = PaymentMethod.CARD_ONLY
-    total_money_to_store = total_money
-  else:
+    bonus_to_spend = calc_bonus_writeoff(rule, base_for_bonus, quantity)
+
+    if bonus_to_spend > 0:
+      try:
+        await balance_repo.change_balance(
+          user=user,
+          delta=-bonus_to_spend,
+          tx_type=TransactionType.SHOP_PURCHASE,
+          description=f"Списание бонусов за покупку товара #{product.id}",
+        )
+      except NotEnoughBalanceError:
+        raise HTTPException(
+          status_code=400,
+          detail="Not enough bonus balance",
+        )
+
+  # сколько рублей реально платим после учёта бонусов
+  total_money_to_store: float | None = None
+  if total_money_raw > 0:
+    total_money_to_store = max(total_money_raw - bonus_to_spend, 0.0)
+
+  total_bonus_to_store = bonus_to_spend
+
+  # ---------- НАЧИСЛЕНИЕ БОНУСОВ ----------
+  bonus_to_accrue = 0
+  if rule is not None:
+    bonus_to_accrue = calc_bonus_accrual(rule, base_for_bonus, quantity)
+
+  if bonus_to_accrue > 0:
+    await balance_repo.change_balance(
+      user=user,
+      delta=bonus_to_accrue,
+      tx_type=TransactionType.SHOP_PURCHASE,
+      description=f"Начисление бонусов за покупку товара #{product.id}",
+    )
+
+  # ---------- СПОСОБ ОПЛАТЫ ----------
+  if (total_money_to_store or 0) > 0 and bonus_to_spend > 0:
+    payment_method = PaymentMethod.MIXED
+  elif (total_money_to_store or 0) > 0:
+    payment_method = PaymentMethod.CARD_ONLY
+  elif bonus_to_spend > 0:
     payment_method = PaymentMethod.BONUS_ONLY
+  else:
+    payment_method = PaymentMethod.CARD_ONLY  # fallback
 
+  # ---------- СОЗДАНИЕ ЗАКАЗА ----------
   order = Order(
     user_id=user.id,
     status=OrderStatus.NEW,
@@ -123,27 +171,31 @@ async def create_order(
   await db.flush()
   await db.refresh(order)
 
-  for item in payload.items:
-    product = products[item.item_id]
-    order_item = OrderItem(
-      order_id=order.id,
-      product_id=product.id,
-      quantity=item.quantity,
-      unit_price_bonus=product.price_bonus,
-      unit_price_money=product.price_money,
-    )
-    db.add(order_item)
+  order_item = OrderItem(
+    order_id=order.id,
+    product_id=product.id,
+    quantity=quantity,
+    unit_price_bonus=product.price_bonus,
+    unit_price_money=product.price_money,
+  )
+  db.add(order_item)
 
   await db.flush()
   await db.commit()
 
+  try:
+    await amocrm_service.send_order_to_amocrm(order)
+  except Exception:
+    # тут можешь залогировать, но не ронять ручку
+    pass
+
   return OrderResponse(
     id=order.id,
     items=[
-      OrderItemResponse(item_id=i.item_id, quantity=i.quantity)
-      for i in payload.items
+      OrderItemResponse(item_id=cart_item.item_id, quantity=cart_item.quantity)
     ],
     total_bonus=total_bonus_to_store,
     total_money=total_money_to_store,
     status=order.status.value,
   )
+
