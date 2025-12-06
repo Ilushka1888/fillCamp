@@ -1,0 +1,95 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: campbot-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${CAMPBOT_DATABASE_NAME:-campbot}
+      POSTGRES_USER: ${CAMPBOT_DATABASE_USER:-campbot}
+      POSTGRES_PASSWORD: ${CAMPBOT_DATABASE_PASSWORD:-campbot}
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${CAMPBOT_DATABASE_PORT:-5435}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${CAMPBOT_DATABASE_USER:-campbot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - caddy-network
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: campbot-server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      CAMPBOT_SERVER_HOST: ${CAMPBOT_SERVER_HOST:-0.0.0.0}
+      CAMPBOT_SERVER_PORT: ${CAMPBOT_SERVER_PORT:-8000}
+      CAMPBOT_SERVER_RELOAD: ${CAMPBOT_SERVER_RELOAD:-false}
+      CAMPBOT_SERVER_LOG_LEVEL: ${CAMPBOT_SERVER_LOG_LEVEL:-info}
+
+      CAMPBOT_AMOCRM_CLIENT_ID: ${CAMPBOT_AMOCRM_CLIENT_ID}
+      CAMPBOT_AMOCRM_CLIENT_SECRET: ${CAMPBOT_AMOCRM_CLIENT_SECRET}
+      CAMPBOT_AMOCRM_REDIRECT_URI: ${CAMPBOT_AMOCRM_REDIRECT_URI}
+      CAMPBOT_AMOCRM_SUBDOMAIN: ${CAMPBOT_AMOCRM_SUBDOMAIN}
+
+      CAMPBOT_TELEGRAM_WEBHOOK_URL: ${CAMPBOT_TELEGRAM_WEBHOOK_URL}
+      CAMPBOT_TELEGRAM_WEBHOOK_PATH: ${CAMPBOT_TELEGRAM_WEBHOOK_PATH:-/telegram/webhook}
+
+      CAMPBOT_STORAGE_PATH: ${CAMPBOT_STORAGE_PATH:-/app/data}
+
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+
+    volumes:
+      - app_data:/app/data
+      - app_logs:/app/logs
+
+    ports:
+      - "${CAMPBOT_SERVER__PORT:-8000}:8000"
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
+
+    networks:
+      - caddy-network
+
+    security_opt:
+      - no-new-privileges:true
+
+    deploy:
+      resources:
+        limits:
+          cpus: '0.8'
+          memory: 1G
+        reservations:
+          cpus: '0.2'
+          memory: 256M
+
+volumes:
+  postgres_data:
+    driver: local
+  app_data:
+    driver: local
+  app_logs:
+    driver: local
+
+networks:
+  caddy-network:
+    external: true
+    name: caddy-network
