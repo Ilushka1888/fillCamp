@@ -56,11 +56,13 @@ class User(Base):
         "User",
         remote_side="User.id",
         back_populates="children",
+        foreign_keys="User.parent_id",
     )
     children: Mapped[list["User"]] = relationship(
         "User",
         back_populates="parent",
         cascade="all,delete-orphan",
+        foreign_keys="User.parent_id",
     )
 
     is_subscribed: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -88,25 +90,49 @@ class User(Base):
     balance: Mapped["Balance | None"] = relationship(
         "Balance", uselist=False, back_populates="user"
     )
+
     transactions: Mapped[list["BalanceTransaction"]] = relationship(
         "BalanceTransaction", back_populates="user"
     )
+
     game_stats: Mapped["GameStats | None"] = relationship(
         "GameStats", uselist=False, back_populates="user"
     )
+
     referrals_given: Mapped[list["Referral"]] = relationship(
         "Referral",
         foreign_keys="Referral.inviter_user_id",
         back_populates="inviter",
     )
+
     referrals_received: Mapped[list["Referral"]] = relationship(
         "Referral",
         foreign_keys="Referral.invited_user_id",
         back_populates="invited",
     )
+
     orders: Mapped[list["Order"]] = relationship("Order", back_populates="user")
     broadcasts_created: Mapped[list["Broadcast"]] = relationship(
         "Broadcast",
         foreign_keys="Broadcast.created_by_admin_id",
         back_populates="created_by_admin",
+    )
+
+    referral_code: Mapped[str | None] = mapped_column(String(50), unique=True, index=True)
+
+    referrer_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    referrer: Mapped["User"] = relationship(remote_side="User.id")
+
+
+    referrer: Mapped["User"] = relationship(
+        "User",
+        remote_side="User.id",
+        foreign_keys="User.referrer_id",
+        back_populates="referrals",
+    )
+
+    referrals: Mapped[list["User"]] = relationship(
+        "User",
+        foreign_keys="User.referrer_id",
+        back_populates="referrer",
     )
