@@ -10,12 +10,14 @@ from fastapi.responses import JSONResponse
 
 from src.app.api.routes.amocrm_router import router as amocrm_router
 from src.app.api.routes.user_router import router as user_router
+from src.app.api.routes.game_router import router as game_router
 
 from src.telegram.bot import create_bot_and_dispatcher, start_bot
 from src.app.core.config import config
 from src.app.core.logger import configure_root_logger, get_logger
 
 from src.app.core.config import BASE_DIR, ENV_PATH
+
 
 configure_root_logger()
 logger = get_logger(__name__)
@@ -59,8 +61,9 @@ app.add_middleware(
 )
 
 app.include_router(amocrm_router, prefix="/api/v1")
-
 app.include_router(user_router)
+app.include_router(game_router)
+
 
 @app.get("/health", tags=["Health"])
 async def health_check() -> dict[str, str]:
