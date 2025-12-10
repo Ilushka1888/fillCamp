@@ -10,8 +10,8 @@ from src.app.schemas.miniapp_schemas import UserInfoResponse
 router = APIRouter(prefix="/api/user", tags=["User"])
 
 
-@router.get("", response_model=UserInfoResponse)
-async def get_user_info(
+@router.post("", response_model=UserInfoResponse)
+async def create_or_get_user(
     current_user: User = Depends(get_current_user),
 ) -> UserInfoResponse:
 

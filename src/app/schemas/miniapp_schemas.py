@@ -27,7 +27,6 @@ class UserProfileResponse(BaseModel):
   linked_parent_tg_id: int | None = None
   linked_child_tg_id: int | None = None
   bonus_balance: int = 0
-  game_progress: int = 0
 
 
 class InvitedUserInfo(BaseModel):
