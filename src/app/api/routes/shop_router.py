@@ -35,23 +35,6 @@ from src.app.services.loyalty_service import (
 router = APIRouter(prefix="/api/shop", tags=["Shop"])
 
 
-@router.get("/items", response_model=list[ShopItemResponse])
-async def get_items(
-  db: AsyncSession = Depends(get_db),
-) -> list[ShopItemResponse]:
-  stmt = (
-    select(Product)
-    .where(Product.is_active.is_(True))
-    .order_by(Product.name)
-  )
-  result = await db.execute(stmt)
-  products = result.scalars().all()
-  return [
-    ShopItemResponse.model_validate(p, from_attributes=True)
-    for p in products
-  ]
-
-
 @router.post("/orders", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
 async def create_order(
         payload: CreateOrderRequest,

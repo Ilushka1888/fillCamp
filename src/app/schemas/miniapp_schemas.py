@@ -54,15 +54,17 @@ class ShopItemResponse(BaseModel):
 
 
 class OrderItemRequest(BaseModel):
-  item_id: int = Field(gt=0)
+  item: int = Field(gt=0)
   quantity: int = Field(gt=0)
 
 
 class CreateOrderRequest(BaseModel):
   items: list[OrderItemRequest]
   pay_with_bonus: bool = True
+  price: float
+  bonuses: int
 
-
+  
 class OrderItemResponse(BaseModel):
   item_id: int
   quantity: int
