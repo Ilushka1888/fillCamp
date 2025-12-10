@@ -45,19 +45,25 @@ async def create_order(
   if not payload.items:
     raise HTTPException(status_code=400, detail="Cart is empty")
 
-  if len(payload.items) != 1:
-    raise HTTPException(
-      status_code=400,
-      detail="Сейчас можно оформить заказ только с одним товаром",
-    )
 
-  product_ids = [i.item_id for i in payload.items]
+  product_ids = [i.item for i in payload.items]
   stmt_products = select(Product).where(
     Product.id.in_(product_ids),
     Product.is_active.is_(True),
   )
   result_products = await db.execute(stmt_products)
   products = {p.id: p for p in result_products.scalars().all()}
+
+  # Нельзя заказывать больше одного тура за раз
+  for order_item in payload.items:
+    product = products.get(order_item.item)
+    if product is None:
+      continue
+    if product.category == "tour" and order_item.quantity > 1:
+      raise HTTPException(
+        status_code=400,
+        detail=f"Тур '{product.name}' нельзя заказывать в количестве больше 1",
+      )
 
   missing = [pid for pid in product_ids if pid not in products]
   if missing:
@@ -169,13 +175,12 @@ async def create_order(
   try:
     await amocrm_service.send_order_to_amocrm(order)
   except Exception:
-    # тут можешь залогировать, но не ронять ручку
     pass
 
   return OrderResponse(
     id=order.id,
     items=[
-      OrderItemResponse(item_id=cart_item.item_id, quantity=cart_item.quantity)
+      OrderItemResponse(item=cart_item.item, quantity=cart_item.quantity)
     ],
     total_bonus=total_bonus_to_store,
     total_money=total_money_to_store,

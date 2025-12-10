@@ -64,7 +64,7 @@ class CreateOrderRequest(BaseModel):
   price: float
   bonuses: int
 
-  
+
 class OrderItemResponse(BaseModel):
   item_id: int
   quantity: int
