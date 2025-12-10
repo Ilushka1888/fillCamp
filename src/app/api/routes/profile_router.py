@@ -26,10 +26,6 @@ async def get_me(
   bonus_balance = await balance_repo.get_balance(user)
 
   # прогресс игры
-  stmt_stats = select(GameStats).where(GameStats.user_id == user.id)
-  result_stats = await db.execute(stmt_stats)
-  stats = result_stats.scalar_one_or_none()
-  game_progress = stats.total_clicks if stats else 0
 
   # связи родитель/ребенок
   linked_parent_tg_id: int | None = None
@@ -63,5 +59,4 @@ async def get_me(
     linked_parent_tg_id=linked_parent_tg_id,
     linked_child_tg_id=linked_child_tg_id,
     bonus_balance=bonus_balance,
-    game_progress=game_progress,
   )
