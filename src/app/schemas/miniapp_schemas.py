@@ -78,7 +78,7 @@ class OrderResponse(BaseModel):
 
 class GameClickResponse(BaseModel):
   new_bonus_balance: int
-  game_progress: int
+  current_energy: int
 
 
 class UserInfoResponse(BaseModel):

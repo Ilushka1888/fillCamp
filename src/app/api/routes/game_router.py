@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
+from src.app.core.constants import MAX_DAILY_ENERGY, MOSCOW_TZ
 
 from fastapi import (
     APIRouter,
@@ -35,13 +37,12 @@ async def _process_click(db: AsyncSession, user: User) -> GameClickResponse:
     """
 
     if user.role != UserRole.CHILD:
-        # HTTP-ручка поймает эту ошибку, а в WS мы проверяем отдельно
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Игра доступна только для ребенка",
         )
 
-    # достаём/создаём статистику
+        # достаём/создаём статистику
     stmt = select(GameStats).where(GameStats.user_id == user.id)
     result = await db.execute(stmt)
     stats = result.scalar_one_or_none()
@@ -51,14 +52,25 @@ async def _process_click(db: AsyncSession, user: User) -> GameClickResponse:
         await db.flush()
         await db.refresh(stats)
 
-    today = date.today()
-    if stats.clicks_today_date != today:
-        stats.clicks_today_date = today
+    # дата по Москве
+    today_msk = datetime.now(MOSCOW_TZ).date()
+    if stats.clicks_today_date != today_msk:
         stats.clicks_today = 0
+        stats.clicks_today_date = today_msk
 
+    # если энергия закончилась — просто возвращаем текущий баланс и энергию 0
+    if stats.clicks_today >= MAX_DAILY_ENERGY:
+        balance_repo = BalanceRepository(db)
+        current_balance = await balance_repo.get_balance(user)
+        return GameClickResponse(
+            new_bonus_balance=current_balance,
+            current_energy=0,
+        )
+
+    # тут энергия ещё есть — считаем клик
     stats.total_clicks += 1
     stats.clicks_today += 1
-    stats.last_click_at = datetime.utcnow()
+    stats.last_click_at = datetime.now(MOSCOW_TZ)
 
     # награда за клик — 1 бонус
     reward_per_click = 1
@@ -76,10 +88,11 @@ async def _process_click(db: AsyncSession, user: User) -> GameClickResponse:
     await db.commit()
 
     new_balance = await balance_repo.get_balance(user)
+    current_energy = max(MAX_DAILY_ENERGY - stats.clicks_today, 0)
 
     return GameClickResponse(
         new_bonus_balance=new_balance,
-        game_progress=stats.total_clicks,
+        current_energy=current_energy,
     )
 
 
@@ -110,7 +123,7 @@ async def game_ws(
     - сервер отвечает: {
           "event": "click",
           "new_bonus_balance": <int>,
-          "game_progress": <int>
+          "current_energy": <int>
       }
     """
 
@@ -186,7 +199,7 @@ async def game_ws(
                 {
                     "event": "click",
                     "new_bonus_balance": result.new_bonus_balance,
-                    "game_progress": result.game_progress,
+                    "current_energy": result.current_energy,
                 }
             )
 
